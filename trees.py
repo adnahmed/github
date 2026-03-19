@@ -12,8 +12,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from src.github.config import GitHubRepoSettings
-
 if TYPE_CHECKING:
     from githubkit import GitHub
 
@@ -33,26 +31,96 @@ class TreesAPI:
         gh: GitHub,
         owner: str,
         repo: str,
-        repo_settings: GitHubRepoSettings | None = None,
+        default_branch: str = "main",
+        default_base_ref: str = "main",
     ) -> None:
         self._gh = gh
         self._owner = owner
         self._repo = repo
-        self._repo_settings = repo_settings or GitHubRepoSettings()
+        self._default_branch = default_branch
+        self._default_base_ref = default_base_ref
 
-    async def get_branch_sha(self) -> str:
-        """Get the current commit SHA of the state branch."""
+    def _resolve_branch(self, branch: str | None) -> str:
+        return branch or self._default_branch
+
+    def _resolve_base_ref(self, base_ref: str | None) -> str:
+        return base_ref or self._default_base_ref
+
+    async def get_branch_sha(self, branch: str | None = None) -> str:
+        """Get the current commit SHA of a branch."""
+        selected_branch = self._resolve_branch(branch)
         resp = await self._gh.rest.git.async_get_ref(
             self._owner,
             self._repo,
-            f"heads/{self._repo_settings.state_branch}",
+            f"heads/{selected_branch}",
         )
         return resp.json()["object"]["sha"]
+
+    @staticmethod
+    def _status_code(exc: Exception) -> int | None:
+        """Extract HTTP status code from githubkit-style exceptions when available."""
+        response = getattr(exc, "response", None)
+        return getattr(response, "status_code", None)
+
+    async def ensure_branch_exists(
+        self,
+        branch: str | None = None,
+        base_ref: str | None = None,
+    ) -> bool:
+        """Ensure a branch exists.
+
+        Returns:
+            True if branch was created, False if it already existed.
+        """
+        selected_branch = self._resolve_branch(branch)
+        selected_base_ref = self._resolve_base_ref(base_ref)
+        branch_ref = f"heads/{selected_branch}"
+        try:
+            await self._gh.rest.git.async_get_ref(self._owner, self._repo, branch_ref)
+            return False
+        except Exception as exc:
+            if self._status_code(exc) != 404:
+                raise
+
+        base_ref = f"heads/{selected_base_ref}"
+        base_resp = await self._gh.rest.git.async_get_ref(
+            self._owner,
+            self._repo,
+            base_ref,
+        )
+        base_sha = base_resp.json()["object"]["sha"]
+
+        try:
+            await self._gh.rest.git.async_create_ref(
+                self._owner,
+                self._repo,
+                ref=f"refs/{branch_ref}",
+                sha=base_sha,
+            )
+            logger.info(
+                "Created missing branch '%s' from '%s'",
+                selected_branch,
+                selected_base_ref,
+            )
+            return True
+        except Exception as exc:
+            status_code = self._status_code(exc)
+            if status_code not in {409, 422}:
+                raise
+
+            # Concurrent creators may race; confirm branch now exists.
+            await self._gh.rest.git.async_get_ref(self._owner, self._repo, branch_ref)
+            logger.info(
+                "Branch '%s' already exists",
+                selected_branch,
+            )
+            return False
 
     async def batch_write(
         self,
         files: dict[str, str | bytes],
         message: str = "batch event write",
+        branch: str | None = None,
     ) -> str:
         """Write multiple files in a single commit.
 
@@ -66,10 +134,11 @@ class TreesAPI:
         if not files:
             raise ValueError("No files to write")
 
-        logger.info("Batch writing %d files to state branch", len(files))
+        selected_branch = self._resolve_branch(branch)
+        logger.info("Batch writing %d files to branch '%s'", len(files), selected_branch)
 
         # 1. Get current branch SHA and its tree
-        branch_sha = await self.get_branch_sha()
+        branch_sha = await self.get_branch_sha(selected_branch)
         commit_resp = await self._gh.rest.git.async_get_commit(
             self._owner, self._repo, branch_sha
         )
@@ -114,7 +183,7 @@ class TreesAPI:
         await self._gh.rest.git.async_update_ref(
             self._owner,
             self._repo,
-            f"heads/{self._repo_settings.state_branch}",
+            f"heads/{selected_branch}",
             sha=new_commit_sha,
         )
 

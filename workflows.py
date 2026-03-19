@@ -8,8 +8,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from src.github.config import GitHubRepoSettings
-
 if TYPE_CHECKING:
     from githubkit import GitHub
 
@@ -24,12 +22,12 @@ class WorkflowsAPI:
         gh: GitHub,
         owner: str,
         repo: str,
-        repo_settings: GitHubRepoSettings | None = None,
+        default_ref: str = "main",
     ) -> None:
         self._gh = gh
         self._owner = owner
         self._repo = repo
-        self._repo_settings = repo_settings or GitHubRepoSettings()
+        self._default_ref = default_ref
 
     async def dispatch(
         self,
@@ -48,7 +46,7 @@ class WorkflowsAPI:
             self._owner,
             self._repo,
             workflow_file,
-            ref=ref or self._repo_settings.default_workflow_ref,
+            ref=ref or self._default_ref,
             inputs=inputs,
         )
         logger.info("Dispatched workflow %s with inputs %s", workflow_file, inputs)
