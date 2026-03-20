@@ -6,7 +6,7 @@ Built on githubkit.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from githubkit import GitHub
@@ -32,7 +32,7 @@ class WorkflowsAPI:
     async def dispatch(
         self,
         workflow_file: str,
-        inputs: dict[str, str],
+        inputs: dict[str, Any],
         ref: str | None = None,
     ) -> None:
         """Trigger a workflow_dispatch event.
