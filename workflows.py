@@ -31,6 +31,43 @@ def _run_identity_strings(run: dict[str, Any]) -> set[str]:
     return identities
 
 
+def _status_code_from_exc(exc: Exception) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    return None
+
+
+def _detail_from_exc(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return ""
+
+    data_model = getattr(response, "data_model", None)
+    if data_model not in (None, ""):
+        return str(data_model)
+
+    message = getattr(response, "message", None)
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+
+    json_loader = getattr(response, "json", None)
+    if callable(json_loader):
+        try:
+            payload = json_loader()
+        except Exception:
+            payload = None
+        if isinstance(payload, (dict, list, str, int, float, bool)):
+            return str(payload)
+
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    return ""
+
+
 class WorkflowsAPI:
     """Dispatch and monitor GitHub Actions workflows."""
 
@@ -59,14 +96,34 @@ class WorkflowsAPI:
             inputs: Input parameters for the workflow.
             ref: Git ref to run on.
         """
-        await self._gh.rest.actions.async_create_workflow_dispatch(
-            self._owner,
-            self._repo,
+        selected_ref = ref or self._default_ref
+        try:
+            await self._gh.rest.actions.async_create_workflow_dispatch(
+                self._owner,
+                self._repo,
+                workflow_file,
+                ref=selected_ref,
+                inputs=inputs,
+            )
+        except Exception as exc:
+            status_code = _status_code_from_exc(exc)
+            detail = _detail_from_exc(exc)
+            logger.error(
+                "Workflow dispatch failed workflow=%s ref=%s status=%s input_keys=%s detail=%s",
+                workflow_file,
+                selected_ref,
+                status_code,
+                sorted(str(key) for key in inputs),
+                detail or "(none)",
+            )
+            raise
+
+        logger.info(
+            "Dispatched workflow %s ref=%s with input_keys=%s",
             workflow_file,
-            ref=ref or self._default_ref,
-            inputs=inputs,
+            selected_ref,
+            sorted(str(key) for key in inputs),
         )
-        logger.info("Dispatched workflow %s with inputs %s", workflow_file, inputs)
 
     async def get_workflow_runs(
         self,
