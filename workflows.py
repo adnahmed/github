@@ -5,6 +5,7 @@ Built on githubkit.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -13,6 +14,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _ACTIVE_WORKFLOW_RUN_STATUSES = ("queued", "in_progress")
+
+
+@dataclass(frozen=True)
+class WorkflowDispatchResult:
+    """Metadata returned by a workflow_dispatch request."""
+
+    workflow_run_id: str = ""
+    run_url: str = ""
+    html_url: str = ""
 
 
 def _run_identity_strings(run: dict[str, Any]) -> set[str]:
@@ -68,6 +78,14 @@ def _detail_from_exc(exc: Exception) -> str:
     return ""
 
 
+def _optional_scalar_string(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, int):
+        return str(value)
+    return ""
+
+
 class WorkflowsAPI:
     """Dispatch and monitor GitHub Actions workflows."""
 
@@ -88,7 +106,7 @@ class WorkflowsAPI:
         workflow_file: str,
         inputs: dict[str, Any],
         ref: str | None = None,
-    ) -> None:
+    ) -> WorkflowDispatchResult:
         """Trigger a workflow_dispatch event.
 
         Args:
@@ -98,12 +116,13 @@ class WorkflowsAPI:
         """
         selected_ref = ref or self._default_ref
         try:
-            await self._gh.rest.actions.async_create_workflow_dispatch(
+            response = await self._gh.rest.actions.async_create_workflow_dispatch(
                 self._owner,
                 self._repo,
                 workflow_file,
                 ref=selected_ref,
                 inputs=inputs,
+                return_run_details=True,
             )
         except Exception as exc:
             status_code = _status_code_from_exc(exc)
@@ -118,12 +137,27 @@ class WorkflowsAPI:
             )
             raise
 
+        result = WorkflowDispatchResult()
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            result = WorkflowDispatchResult(
+                workflow_run_id=_optional_scalar_string(payload.get("workflow_run_id")),
+                run_url=_optional_scalar_string(payload.get("run_url")),
+                html_url=_optional_scalar_string(payload.get("html_url")),
+            )
+
         logger.info(
-            "Dispatched workflow %s ref=%s with input_keys=%s",
+            "Dispatched workflow %s ref=%s with input_keys=%s workflow_run_id=%s",
             workflow_file,
             selected_ref,
             sorted(str(key) for key in inputs),
+            result.workflow_run_id or "(unknown)",
         )
+        return result
 
     async def get_workflow_runs(
         self,
