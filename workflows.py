@@ -21,8 +21,23 @@ class WorkflowDispatchResult:
     """Metadata returned by a workflow_dispatch request."""
 
     workflow_run_id: str = ""
+    workflow_run_attempt: str = ""
     run_url: str = ""
     html_url: str = ""
+
+
+@dataclass(frozen=True)
+class WorkflowJob:
+    """Metadata for a single workflow job."""
+
+    job_id: str
+    name: str = ""
+    status: str = ""
+    conclusion: str = ""
+    run_id: str = ""
+    run_attempt: str = ""
+    html_url: str = ""
+    url: str = ""
 
 
 def _run_identity_strings(run: dict[str, Any]) -> set[str]:
@@ -86,6 +101,31 @@ def _optional_scalar_string(value: Any) -> str:
     return ""
 
 
+def _require_int_id(raw_value: str | int, *, field_name: str) -> int:
+    if isinstance(raw_value, int):
+        return raw_value
+    normalized = str(raw_value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    try:
+        return int(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an integer: {raw_value}") from exc
+
+
+def _build_workflow_job(payload: dict[str, Any]) -> WorkflowJob:
+    return WorkflowJob(
+        job_id=_optional_scalar_string(payload.get("id")),
+        name=_optional_scalar_string(payload.get("name")),
+        status=_optional_scalar_string(payload.get("status")),
+        conclusion=_optional_scalar_string(payload.get("conclusion")),
+        run_id=_optional_scalar_string(payload.get("run_id")),
+        run_attempt=_optional_scalar_string(payload.get("run_attempt")),
+        html_url=_optional_scalar_string(payload.get("html_url")),
+        url=_optional_scalar_string(payload.get("url")),
+    )
+
+
 class WorkflowsAPI:
     """Dispatch and monitor GitHub Actions workflows."""
 
@@ -146,6 +186,7 @@ class WorkflowsAPI:
         if isinstance(payload, dict):
             result = WorkflowDispatchResult(
                 workflow_run_id=_optional_scalar_string(payload.get("workflow_run_id")),
+                workflow_run_attempt=_optional_scalar_string(payload.get("workflow_run_attempt")),
                 run_url=_optional_scalar_string(payload.get("run_url")),
                 html_url=_optional_scalar_string(payload.get("html_url")),
             )
@@ -208,3 +249,109 @@ class WorkflowsAPI:
             ) from last_error
 
         return active_run_ids
+
+    async def get_workflow_run_attempt(self, run_id: str | int) -> str:
+        """Return the current attempt number for a workflow run."""
+        normalized_run_id = _require_int_id(run_id, field_name="run_id")
+        response = await self._gh.rest.actions.async_get_workflow_run(
+            self._owner,
+            self._repo,
+            normalized_run_id,
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return ""
+        return _optional_scalar_string(payload.get("run_attempt"))
+
+    async def list_jobs_for_workflow_run_attempt(
+        self,
+        run_id: str | int,
+        attempt_number: str | int,
+    ) -> list[WorkflowJob]:
+        """List all jobs for a specific workflow run attempt."""
+        normalized_run_id = _require_int_id(run_id, field_name="run_id")
+        normalized_attempt = _require_int_id(attempt_number, field_name="attempt_number")
+        page = 1
+        jobs: list[WorkflowJob] = []
+
+        while True:
+            response = await self._gh.rest.actions.async_list_jobs_for_workflow_run_attempt(
+                self._owner,
+                self._repo,
+                normalized_run_id,
+                normalized_attempt,
+                per_page=100,
+                page=page,
+            )
+            payload = response.json()
+            if not isinstance(payload, dict):
+                break
+
+            page_items = payload.get("jobs")
+            if not isinstance(page_items, list):
+                break
+
+            jobs.extend(
+                _build_workflow_job(item)
+                for item in page_items
+                if isinstance(item, dict)
+            )
+            if len(page_items) < 100:
+                break
+            page += 1
+
+        return jobs
+
+    async def rerun_job(
+        self,
+        job_id: str | int,
+        *,
+        enable_debug_logging: bool = False,
+    ) -> None:
+        """Re-run a specific workflow job and its dependent jobs."""
+        normalized_job_id = _require_int_id(job_id, field_name="job_id")
+        kwargs: dict[str, object] = {}
+        if enable_debug_logging:
+            kwargs["data"] = {"enable_debug_logging": True}
+        await self._gh.rest.actions.async_re_run_job_for_workflow_run(
+            self._owner,
+            self._repo,
+            normalized_job_id,
+            **kwargs,
+        )
+
+    async def rerun_failed_jobs(
+        self,
+        run_id: str | int,
+        *,
+        enable_debug_logging: bool = False,
+    ) -> None:
+        """Re-run all failed jobs in a workflow run."""
+        normalized_run_id = _require_int_id(run_id, field_name="run_id")
+        kwargs: dict[str, object] = {}
+        if enable_debug_logging:
+            kwargs["data"] = {"enable_debug_logging": True}
+        await self._gh.rest.actions.async_re_run_workflow_failed_jobs(
+            self._owner,
+            self._repo,
+            normalized_run_id,
+            **kwargs,
+        )
+
+    async def cancel_workflow_run(self, run_id: str | int) -> None:
+        """Cancel a workflow run."""
+        normalized_run_id = _require_int_id(run_id, field_name="run_id")
+        await self._gh.rest.actions.async_cancel_workflow_run(
+            self._owner,
+            self._repo,
+            normalized_run_id,
+        )
+
+    async def force_cancel_workflow_run(self, run_id: str | int) -> None:
+        """Force-cancel a workflow run."""
+        normalized_run_id = _require_int_id(run_id, field_name="run_id")
+        await self._gh.rest.actions.async_force_cancel_workflow_run(
+            self._owner,
+            self._repo,
+            normalized_run_id,
+        )
