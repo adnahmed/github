@@ -40,6 +40,18 @@ class WorkflowJob:
     url: str = ""
 
 
+@dataclass(frozen=True)
+class WorkflowRunSummary:
+    """Metadata for a single workflow run."""
+
+    run_id: str
+    status: str = ""
+    conclusion: str = ""
+    run_attempt: str = ""
+    html_url: str = ""
+    url: str = ""
+
+
 def _run_identity_strings(run: dict[str, Any]) -> set[str]:
     identities: set[str] = set()
     raw_run_id = run.get("id")
@@ -120,6 +132,17 @@ def _build_workflow_job(payload: dict[str, Any]) -> WorkflowJob:
         status=_optional_scalar_string(payload.get("status")),
         conclusion=_optional_scalar_string(payload.get("conclusion")),
         run_id=_optional_scalar_string(payload.get("run_id")),
+        run_attempt=_optional_scalar_string(payload.get("run_attempt")),
+        html_url=_optional_scalar_string(payload.get("html_url")),
+        url=_optional_scalar_string(payload.get("url")),
+    )
+
+
+def _build_workflow_run_summary(payload: dict[str, Any]) -> WorkflowRunSummary:
+    return WorkflowRunSummary(
+        run_id=_optional_scalar_string(payload.get("id")),
+        status=_optional_scalar_string(payload.get("status")),
+        conclusion=_optional_scalar_string(payload.get("conclusion")),
         run_attempt=_optional_scalar_string(payload.get("run_attempt")),
         html_url=_optional_scalar_string(payload.get("html_url")),
         url=_optional_scalar_string(payload.get("url")),
@@ -262,6 +285,19 @@ class WorkflowsAPI:
         if not isinstance(payload, dict):
             return ""
         return _optional_scalar_string(payload.get("run_attempt"))
+
+    async def get_workflow_run_summary(self, run_id: str | int) -> WorkflowRunSummary:
+        """Return basic status metadata for a workflow run."""
+        normalized_run_id = _require_int_id(run_id, field_name="run_id")
+        response = await self._gh.rest.actions.async_get_workflow_run(
+            self._owner,
+            self._repo,
+            normalized_run_id,
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return WorkflowRunSummary(run_id=str(normalized_run_id))
+        return _build_workflow_run_summary(payload)
 
     async def list_jobs_for_workflow_run_attempt(
         self,
